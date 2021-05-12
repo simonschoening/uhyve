@@ -87,6 +87,5 @@ name = "benchmarks"
 harness = false
 
 [patch.crates-io]
-kvm-bindings = { path = "../kvm-bindings" }
-kvm-ioctls = { path = "../kvm-ioctls" }
-vmm-sys-util = { path = "../vmm-sys-util" }
+kvm-bindings = { git = "https://github.com/simonschoening/kvm-bindings" }
+kvm-ioctls = { git = "https://github.com/simonschoening/kvm-ioctls" }
