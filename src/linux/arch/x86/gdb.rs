@@ -15,7 +15,7 @@ use crate::gdb_parser::{
 	Breakpoint, Error, FileData, Handler, Id, MemoryRegion, ProcessInfo, ProcessType, StopReason,
 	ThreadId, VCont, VContFeature, Watchpoint,
 };
-use crate::linux::vcpu::UhyveCPU;
+use crate::linux::arch::vcpu::UhyveCPU;
 use crate::utils::get_max_subslice;
 use crate::vm::VirtualCPU;
 use log::{debug, error, info};

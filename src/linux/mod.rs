@@ -1,11 +1,13 @@
-pub mod gdb;
 pub mod uhyve;
-pub mod vcpu;
+//pub mod vcpu;
 pub mod virtio;
 pub mod virtqueue;
+pub mod arch;
 
 use kvm_ioctls::Kvm;
 use lazy_static::lazy_static;
+
+pub use arch::gdb;
 
 lazy_static! {
 	static ref KVM: Kvm = Kvm::new().unwrap();

@@ -2,16 +2,19 @@
 //! create a Virtual Machine and load the kernel.
 
 use crate::consts::*;
+//#[cfg(target_arch = "x86_64")]
 use crate::debug_manager::DebugManager;
 use crate::error::*;
-use crate::linux::vcpu::*;
+//use crate::linux::vcpu::*;
+use crate::linux::arch::vcpu::*;
 use crate::linux::virtio::*;
 use crate::linux::{MemoryRegion, KVM};
 use crate::shared_queue::*;
 use crate::vm::{BootInfo, Parameter, VirtualCPU, Vm};
+use crate::linux::arch;
 use kvm_bindings::*;
 use kvm_ioctls::VmFd;
-use log::debug;
+use log::{debug,warn};
 use nix::sys::mman::*;
 use std::convert::TryInto;
 use std::hint;
@@ -31,7 +34,7 @@ const KVM_32BIT_MAX_MEM_SIZE: usize = 1 << 32;
 const KVM_32BIT_GAP_SIZE: usize = 768 << 20;
 const KVM_32BIT_GAP_START: usize = KVM_32BIT_MAX_MEM_SIZE - KVM_32BIT_GAP_SIZE;
 
-struct UhyveNetwork {
+pub struct UhyveNetwork {
 	#[allow(dead_code)]
 	reader: std::thread::JoinHandle<()>,
 	#[allow(dead_code)]
@@ -197,67 +200,8 @@ impl Uhyve {
 
 			unsafe { vm.set_user_memory_region(kvm_mem) }.or_else(to_error)?;
 		}
-
-		debug!("Initialize interrupt controller");
-
-		// create basic interrupt controller
-		vm.create_irq_chip().or_else(to_error)?;
-
-		// enable x2APIC support
-		let mut cap: kvm_enable_cap = kvm_bindings::kvm_enable_cap {
-			cap: KVM_CAP_X2APIC_API,
-			flags: 0,
-			..Default::default()
-		};
-		cap.args[0] =
-			(KVM_X2APIC_API_USE_32BIT_IDS | KVM_X2APIC_API_DISABLE_BROADCAST_QUIRK).into();
-		vm.enable_cap(&cap)
-			.expect("Unable to enable x2apic support");
-
-		// currently, we support only system, which provides the
-		// cpu feature TSC_DEADLINE
-		let mut cap: kvm_enable_cap = kvm_bindings::kvm_enable_cap {
-			cap: KVM_CAP_TSC_DEADLINE_TIMER,
-			..Default::default()
-		};
-		cap.args[0] = 0;
-		if vm.enable_cap(&cap).is_ok() {
-			panic!("Processor feature \"tsc deadline\" isn't supported!")
-		}
-
-		let cap: kvm_enable_cap = kvm_bindings::kvm_enable_cap {
-			cap: KVM_CAP_IRQFD,
-			..Default::default()
-		};
-		if vm.enable_cap(&cap).is_ok() {
-			panic!("The support of KVM_CAP_IRQFD is curently required");
-		}
-
-		let mut cap: kvm_enable_cap = kvm_bindings::kvm_enable_cap {
-			cap: KVM_CAP_X86_DISABLE_EXITS,
-			flags: 0,
-			..Default::default()
-		};
-		cap.args[0] =
-			(KVM_X86_DISABLE_EXITS_PAUSE | KVM_X86_DISABLE_EXITS_MWAIT | KVM_X86_DISABLE_EXITS_HLT)
-				.into();
-		vm.enable_cap(&cap)
-			.expect("Unable to disable exists due pause instructions");
-
-		let evtfd = EventFd::new(0).unwrap();
-		vm.register_irqfd(&evtfd, UHYVE_IRQ_NET).or_else(to_error)?;
-		// create TUN/TAP device
-		let uhyve_device = match &specs.nic {
-			Some(nic) => {
-				debug!("Intialize network interface");
-				Some(UhyveNetwork::new(
-					evtfd,
-					nic.to_owned().to_string(),
-					mem.host_address() + SHAREDQUEUE_START,
-				))
-			}
-			_ => None,
-		};
+		
+		let uhyve_device = arch::uhyve_init(&vm, &specs, &mem).unwrap();
 
 		let hyve = Uhyve {
 			vm,
@@ -342,6 +286,10 @@ impl Vm for Uhyve {
 		self.boot_info = header;
 	}
 
+	fn get_boot_info(&self) -> *const BootInfo{
+		self.boot_info
+	}
+
 	fn cpu_online(&self) -> u32 {
 		if self.boot_info.is_null() {
 			0
@@ -361,7 +309,7 @@ unsafe impl Send for Uhyve {}
 unsafe impl Sync for Uhyve {}
 
 #[derive(Debug)]
-struct MmapMemory {
+pub struct MmapMemory {
 	flags: u32,
 	memory_size: usize,
 	guest_address: usize,
@@ -400,8 +348,9 @@ impl MmapMemory {
 		if huge_pages {
 			debug!("Uhyve uses huge pages");
 			unsafe {
-				if madvise(host_address, memory_size, MmapAdvise::MADV_HUGEPAGE).is_err() {
-					panic!("madvise failed");
+				let res_err =madvise(host_address, memory_size, MmapAdvise::MADV_HUGEPAGE); 
+				if res_err.is_err() {
+					warn!("madvise failed {:?}", res_err); //Not supported on riscv
 				}
 			}
 		}

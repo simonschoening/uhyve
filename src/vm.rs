@@ -2,11 +2,16 @@ use super::paging::*;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::_rdtsc as rdtsc;
 use goblin::elf;
-use goblin::elf64::header::{EM_X86_64, ET_DYN};
+use goblin::elf64::header::ET_DYN;
+#[cfg(target_arch = "x86_64")]
+use goblin::elf64::header::EM_X86_64;
+#[cfg(target_arch = "riscv64")]
+use goblin::elf64::header::EM_RISCV;
 use goblin::elf64::program_header::{PT_LOAD, PT_TLS};
 use goblin::elf64::reloc::*;
 use log::{debug, error, warn};
 use nix::errno::errno;
+#[cfg(target_arch = "x86_64")]
 use raw_cpuid::CpuId;
 use std::convert::TryInto;
 use std::fs;
@@ -16,6 +21,7 @@ use std::time::{Duration, Instant, SystemTime};
 use std::{fmt, mem, slice};
 
 use crate::consts::*;
+#[cfg(target_arch = "x86_64")]
 use crate::debug_manager::DebugManager;
 use crate::error::*;
 #[cfg(target_os = "linux")]
@@ -55,6 +61,8 @@ pub struct BootInfo {
 	pub hcip: [u8; 4],
 	pub hcgateway: [u8; 4],
 	pub hcmask: [u8; 4],
+	#[cfg(target_arch = "riscv64")]
+	pub timebase_freq: u64,
 }
 
 impl BootInfo {
@@ -86,6 +94,8 @@ impl BootInfo {
 			hcip: [255, 255, 255, 255],
 			hcgateway: [255, 255, 255, 255],
 			hcmask: [255, 255, 255, 0],
+			#[cfg(target_arch = "riscv64")]
+			timebase_freq: 0,
 		}
 	}
 }
@@ -234,7 +244,10 @@ struct SysUnlink {
 }
 
 pub trait VirtualCPU {
+	#[cfg(not(target_arch = "riscv64"))]
 	fn init(&mut self, entry_point: u64) -> Result<()>;
+	#[cfg(target_arch = "riscv64")]
+	fn init(&mut self, entry_point: u64, boot_info: *const BootInfo) -> Result<()>;
 	fn run(&mut self) -> Result<Option<i32>>;
 	fn print_registers(&self);
 	fn host_address(&self, addr: usize) -> usize;
@@ -357,10 +370,21 @@ pub trait VirtualCPU {
 		Ok(())
 	}
 
+	#[cfg(target_arch = "x86_64")]
 	fn unlink(&self, args_ptr: usize) -> Result<()> {
 		unsafe {
 			let sysunlink = &mut *(args_ptr as *mut SysUnlink);
 			sysunlink.ret = libc::unlink(self.host_address(sysunlink.name as usize) as *const i8);
+		}
+
+		Ok(())
+	}
+
+	#[cfg(target_arch = "riscv64")]
+	fn unlink(&self, args_ptr: usize) -> Result<()> {
+		unsafe {
+			let sysunlink = &mut *(args_ptr as *mut SysUnlink);
+			sysunlink.ret = libc::unlink(self.host_address(sysunlink.name as usize) as *const u8);
 		}
 
 		Ok(())
@@ -371,11 +395,26 @@ pub trait VirtualCPU {
 		sysexit.arg
 	}
 
+	#[cfg(target_arch = "x86_64")]
 	fn open(&self, args_ptr: usize) -> Result<()> {
 		unsafe {
 			let sysopen = &mut *(args_ptr as *mut SysOpen);
 			sysopen.ret = libc::open(
 				self.host_address(sysopen.name as usize) as *const i8,
+				sysopen.flags,
+				sysopen.mode,
+			);
+		}
+
+		Ok(())
+	}
+
+	#[cfg(target_arch = "riscv64")]
+	fn open(&self, args_ptr: usize) -> Result<()> {
+		unsafe {
+			let sysopen = &mut *(args_ptr as *mut SysOpen);
+			sysopen.ret = libc::open(
+				self.host_address(sysopen.name as usize) as *const u8,
 				sysopen.flags,
 				sysopen.mode,
 			);
@@ -471,6 +510,8 @@ pub trait Vm {
 	fn kernel_path(&self) -> &str;
 	fn create_cpu(&self, id: u32) -> Result<Box<dyn VirtualCPU>>;
 	fn set_boot_info(&mut self, header: *const BootInfo);
+	#[cfg(target_os = "linux")]
+	fn get_boot_info(&self) -> *const BootInfo;
 	fn cpu_online(&self) -> u32;
 	fn get_ip(&self) -> Option<Ipv4Addr>;
 	fn get_gateway(&self) -> Option<Ipv4Addr>;
@@ -531,8 +572,10 @@ pub trait Vm {
 	unsafe fn load_kernel(&mut self) -> Result<()> {
 		debug!("Load kernel from {}", self.kernel_path());
 
+		debug!("Read Elf");
 		let buffer = fs::read(self.kernel_path())
 			.map_err(|_| Error::InvalidFile(self.kernel_path().into()))?;
+		debug!("Parse Elf");
 		let elf =
 			elf::Elf::parse(&buffer).map_err(|_| Error::InvalidFile(self.kernel_path().into()))?;
 
@@ -549,6 +592,12 @@ pub trait Vm {
 			debug!("ELF file is a shared object file");
 		}
 
+		#[cfg(target_arch = "riscv64")]
+		if elf.header.e_machine != EM_RISCV {
+			return Err(Error::InvalidFile(self.kernel_path().into()));
+		}
+
+		#[cfg(target_arch = "x86_64")]
 		if elf.header.e_machine != EM_X86_64 {
 			return Err(Error::InvalidFile(self.kernel_path().into()));
 		}
@@ -620,7 +669,9 @@ pub trait Vm {
 			Err(err) => panic!("SystemTime before UNIX EPOCH! Error: {}", err),
 		}
 
+		#[cfg(target_arch = "x86_64")]
 		let cpuid = CpuId::new();
+		#[cfg(target_arch = "x86_64")]
 		let mhz: u32 = detect_freq_from_cpuid(&cpuid).unwrap_or_else(|_| {
 			debug!("Failed to detect from cpuid");
 			detect_freq_from_cpuid_hypervisor_info(&cpuid).unwrap_or_else(|_| {
@@ -628,8 +679,11 @@ pub trait Vm {
 				get_cpu_frequency_from_os().unwrap_or(0)
 			})
 		});
+		#[cfg(target_arch = "x86_64")]
 		debug!("detected a cpu frequency of {} Mhz", mhz);
+		#[cfg(target_arch = "x86_64")]
 		write(&mut (*boot_info).cpu_freq, mhz);
+
 		if (*boot_info).cpu_freq == 0 {
 			warn!("Unable to determine processor frequency");
 		}
@@ -714,6 +768,7 @@ pub trait Vm {
 	}
 }
 
+#[cfg(target_arch = "x86_64")]
 fn detect_freq_from_cpuid(cpuid: &CpuId) -> std::result::Result<u32, ()> {
 	debug!("Trying to detect CPU frequency by tsc info");
 
@@ -754,6 +809,7 @@ fn detect_freq_from_cpuid(cpuid: &CpuId) -> std::result::Result<u32, ()> {
 	}
 }
 
+#[cfg(target_arch = "x86_64")]
 fn detect_freq_from_cpuid_hypervisor_info(cpuid: &CpuId) -> std::result::Result<u32, ()> {
 	debug!("Trying to detect CPU frequency by hypervisor info");
 	let hypervisor_info = cpuid.get_hypervisor_info().ok_or(())?;
@@ -770,6 +826,7 @@ fn detect_freq_from_cpuid_hypervisor_info(cpuid: &CpuId) -> std::result::Result<
 	}
 }
 
+#[cfg(target_arch = "x86_64")]
 fn get_cpu_frequency_from_os() -> std::result::Result<u32, ()> {
 	// Determine TSC frequency by measuring it (loop for a second, record ticks)
 	let duration = Duration::from_millis(10);
@@ -798,6 +855,7 @@ mod tests {
 	// test is derived from
 	// https://github.com/gz/rust-cpuid/blob/master/examples/tsc_frequency.rs
 	#[test]
+	#[cfg(target_arch = "x86_64")]
 	fn test_detect_freq_from_cpuid() {
 		let cpuid = CpuId::new();
 		let has_tsc = cpuid
@@ -874,6 +932,7 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(target_arch = "x86_64")]
 	fn test_get_cpu_frequency_from_os() {
 		let freq_res = get_cpu_frequency_from_os();
 		assert!(freq_res.is_ok());
@@ -945,9 +1004,13 @@ mod tests {
 #[cfg(not(target_os = "windows"))]
 pub fn create_vm(path: String, specs: &super::vm::Parameter) -> Result<Uhyve> {
 	// If we are given a port, create new DebugManager.
+	#[cfg(target_arch = "x86_64")]
 	let gdb = specs.gdbport.map(|port| DebugManager::new(port).unwrap());
 
+	#[cfg(target_arch = "x86_64")]
 	let vm = Uhyve::new(path, &specs, gdb)?;
+	#[cfg(target_arch = "riscv64")]
+	let vm = Uhyve::new(path, &specs, Option::None)?;
 
 	Ok(vm)
 }

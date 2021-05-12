@@ -288,6 +288,10 @@ fn main() {
 				}
 
 				let mut cpu = vm.create_cpu(tid).unwrap();
+
+				#[cfg(target_arch = "riscv64")]
+				cpu.init(vm.get_entry_point(), vm.get_boot_info()).unwrap();
+				#[cfg(not(target_arch = "riscv64"))]
 				cpu.init(vm.get_entry_point()).unwrap();
 
 				// only one core is able to enter startup code

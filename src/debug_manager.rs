@@ -3,6 +3,7 @@ use gdb_protocol::{
 	packet::{CheckedPacket, Kind},
 };
 
+#[cfg(target_arch = "x86_64")]
 use crate::gdb_parser::{self, handle_packet, Handler, Response, StopReason, VCont};
 use std::cell::RefCell;
 use std::io::BufReader;
@@ -27,36 +28,46 @@ use std::net::TcpStream;
 /// - To be Host-OS/Arch flexible, both Handler and State are defined in eg `linux/gdb.rs`
 ///
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use crate::linux::gdb;
 #[cfg(target_os = "macos")]
 use crate::macos::gdb;
 
 use log::{debug, info};
 
+#[cfg(target_arch = "x86_64")]
 pub type State = gdb::State;
 
 pub struct DebugManager {
+	#[cfg(target_arch = "x86_64")]
 	server: RefCell<GdbServer<BufReader<TcpStream>, TcpStream>>,
+	#[cfg(target_arch = "x86_64")]
 	pub state: RefCell<State>,
 }
 
 impl DebugManager {
 	pub fn new(port: u32) -> Result<DebugManager, gdb_protocol::Error> {
+		#[cfg(target_arch = "x86_64")]
 		println!("Waiting for debugger to attach on port {}...", port);
+		#[cfg(target_arch = "x86_64")]
 		let server = GdbServer::listen(format!("0.0.0.0:{}", port))?;
+		#[cfg(target_arch = "x86_64")]
 		info!("Connected!");
 
+		#[cfg(target_arch = "x86_64")]
 		let state = State::new();
 
 		Ok(DebugManager {
+			#[cfg(target_arch = "x86_64")]
 			server: RefCell::new(server),
+			#[cfg(target_arch = "x86_64")]
 			state: RefCell::new(state),
 		})
 	}
 
 	/// main event-loop. Called from vcpu trap, loops and executes commmands until debugger tells us to continue.
 	/// Do not borrow state in this func, since handler is expected to borrow/mutate it.
+	#[cfg(target_arch = "x86_64")]
 	pub fn handle_commands<H>(
 		&self,
 		handler: &mut H,
