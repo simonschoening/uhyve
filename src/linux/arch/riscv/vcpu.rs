@@ -11,9 +11,13 @@ use kvm_ioctls::{VcpuExit, VcpuFd};
 use log::{debug, error, info};
 use std::sync::{Arc, Mutex};
 use std::ptr::write;
+use std::cell::RefCell;
+use std::str;
 
 const PCI_CONFIG_DATA_PORT: u16 = 0xCFC;
 const PCI_CONFIG_ADDRESS_PORT: u16 = 0xCF8;
+
+thread_local!(static SBI_UTF_BUFFER: RefCell<Vec<u8>> = RefCell::new(Vec::new()));
 
 pub struct UhyveCPU {
 	id: u32,
@@ -64,9 +68,14 @@ impl VirtualCPU for UhyveCPU {
         self.vcpu.set_one_reg(KVM_REG_RISCV_CORE_PC, entry_point)
             .expect("Failed to set pc register");
 
+		let isa = self.vcpu.get_one_reg(KVM_REG_RISCV_CONFIG_ISA).expect("Failed to read ISA!");
+		debug!("Detected ISA {:X}", isa);
 		let timebase_freq = self.vcpu.get_one_reg(KVM_REG_RISCV_TIMER_FREQUENCY).expect("Failed to read timebase freq!");
-		debug!("detected a timebase frequency of {} Hz", timebase_freq);
+		debug!("Detected a timebase frequency of {} Hz", timebase_freq);
 		unsafe {write(&mut (*(boot_info as *mut BootInfo)).timebase_freq, timebase_freq)};
+
+		self.vcpu.set_one_reg(KVM_REG_RISCV_CORE_A0, self.id as u64)
+			.expect("Failed to set a0 register");
 
 		self.vcpu.set_one_reg(KVM_REG_RISCV_CORE_A1, BOOT_INFO_ADDR)
 			.expect("Failed to set a1 register");
@@ -180,7 +189,7 @@ impl VirtualCPU for UhyveCPU {
 				},
 				VcpuExit::IoOut(port, addr) => {
 					match port {
-						#![allow(clippy::cast_ptr_alignment)]
+						//#![allow(clippy::cast_ptr_alignment)]
 						SHUTDOWN_PORT => {
 							return Ok(None);
 						}
@@ -284,8 +293,28 @@ impl VirtualCPU for UhyveCPU {
 					//info!("SBI {:?}", sbi_reason);
 					match sbi_reason.extension_id {
 						SBI_CONSOLE_PUTCHAR => {
-							self.uart(char::from_u32(sbi_reason.args[0] as u32).unwrap().to_string())
-								.expect("UART failed");
+							SBI_UTF_BUFFER.with(|buffer_cell| {
+								let mut buffer = buffer_cell.borrow_mut();
+								buffer.push((sbi_reason.args[0] & 0xFF) as u8);
+								if buffer.len() == 4 {
+									self.uart(str::from_utf8(&buffer).unwrap_or("�").to_string()).expect("UART failed");
+									buffer.clear();
+								}
+								else {
+									if str::from_utf8(&buffer).map(
+										|msg| {
+											self.uart(msg.to_string()).expect("UART failed");
+										}
+									).is_ok()
+									{
+										buffer.clear();
+									}
+								}
+							});
+							/* let c = char::from_u32((sbi_reason.args[0] & 0xFF) as u32);
+							assert!(c.is_some(), "Error: {:#X}", sbi_reason.args[0]);
+							self.uart(c.unwrap().to_string())
+								.expect("UART failed"); */
 						}
 						_ => info!("Unhandled SBI call: {:?}", sbi_reason)
 					}
@@ -301,8 +330,8 @@ impl VirtualCPU for UhyveCPU {
 					match ev_type{
 						KVM_SYSTEM_EVENT_SHUTDOWN => {
 							self.print_registers();
-							debug!("Shutdown Exit");
-							break;
+							debug!("Shutdown Exit, flags: {:?}", ev_flags);
+							return Ok(Some(0));
 						}
 						_ => info!("Unhandled SystemEvent: {:?}", ev_type)
 					}
@@ -329,13 +358,13 @@ impl VirtualCPU for UhyveCPU {
 		println!("Registers:");
 		println!("----------");
 
-		println!("{:?}", regs);
+		println!("{:x?}", regs);
 	}
 }
 
 impl Drop for UhyveCPU {
 	fn drop(&mut self) {
 		debug!("Drop vCPU {}", self.id);
-		//self.print_registers();
+		self.print_registers();
 	}
 }
