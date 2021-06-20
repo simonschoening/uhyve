@@ -63,6 +63,10 @@ pub struct BootInfo {
 	pub hcmask: [u8; 4],
 	#[cfg(target_arch = "riscv64")]
 	pub timebase_freq: u64,
+	#[cfg(target_arch = "riscv64")]
+	pub mem_base: u64,
+	#[cfg(target_arch = "riscv64")]
+	pub hart_mask: u64,
 }
 
 impl BootInfo {
@@ -96,6 +100,10 @@ impl BootInfo {
 			hcmask: [255, 255, 255, 0],
 			#[cfg(target_arch = "riscv64")]
 			timebase_freq: 0,
+			#[cfg(target_arch = "riscv64")]
+			mem_base: 0,
+			#[cfg(target_arch = "riscv64")]
+			hart_mask: 0,
 		}
 	}
 }
@@ -684,6 +692,9 @@ pub trait Vm {
 		#[cfg(target_arch = "x86_64")]
 		write(&mut (*boot_info).cpu_freq, mhz);
 
+		#[cfg(target_arch = "riscv64")]
+		write(&mut (*boot_info).hart_mask, (1 << self.num_cpus()) - 1);
+
 		if (*boot_info).cpu_freq == 0 {
 			warn!("Unable to determine processor frequency");
 		}
@@ -751,9 +762,16 @@ pub trait Vm {
 
 		// relocate entries (strings, copy-data, etc.) with an addend
 		elf.dynrelas.iter().for_each(|rela| match rela.r_type {
+			#[cfg(target_arch = "x86_64")]
 			R_X86_64_RELATIVE => {
 				let offset = (vm_mem as u64 + start_address + rela.r_offset) as *mut u64;
 				*offset = (start_address as i64 + rela.r_addend.unwrap_or(0)) as u64;
+			}
+			#[cfg(target_arch = "riscv64")]
+			R_RISCV_RELATIVE => {
+				let offset = (vm_mem as u64 + start_address + rela.r_offset) as *mut u64;
+				*offset = (start_address as i64 + rela.r_addend.unwrap_or(0)) as u64;
+				//debug!("R_RISCV_RELATIVE: {:?}", rela);
 			}
 			_ => {
 				debug!("Unsupported relocation type {}", rela.r_type);
