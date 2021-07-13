@@ -62,11 +62,11 @@ pub struct BootInfo {
 	pub hcgateway: [u8; 4],
 	pub hcmask: [u8; 4],
 	#[cfg(target_arch = "riscv64")]
-	pub timebase_freq: u64,
-	#[cfg(target_arch = "riscv64")]
-	pub mem_base: u64,
+	pub dtb_ptr: u64,
 	#[cfg(target_arch = "riscv64")]
 	pub hart_mask: u64,
+	#[cfg(target_arch = "riscv64")]
+	pub timebase_freq: u64,
 }
 
 impl BootInfo {
@@ -99,11 +99,11 @@ impl BootInfo {
 			hcgateway: [255, 255, 255, 255],
 			hcmask: [255, 255, 255, 0],
 			#[cfg(target_arch = "riscv64")]
-			timebase_freq: 0,
-			#[cfg(target_arch = "riscv64")]
-			mem_base: 0,
+			dtb_ptr: 0,
 			#[cfg(target_arch = "riscv64")]
 			hart_mask: 0,
+			#[cfg(target_arch = "riscv64")]
+			timebase_freq: 0,
 		}
 	}
 }
